@@ -3,6 +3,7 @@ import codecs
 from os.path import basename
 from collections import OrderedDict
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 from pandas import DataFrame, to_datetime
@@ -17,10 +18,10 @@ from sunpy.timeseries.timeseriesbase import GenericTimeSeries
 from sunpy.util.metadata import MetaDict
 from sunpy.visualization import peek_show
 
-__all__ = ['EVESpWxTimeSeries', 'ESPTimeSeries']
+__all__ = ['EVESpWxTimeSeries', 'ESPTimeSeriesPlus', 'MEGSPTimeSeries']
 
 
-class ESPTimeSeries(GenericTimeSeries):
+class ESPTimeSeriesPlus(GenericTimeSeries):
     """
     SDO EVE/ESP Level 1 data.
 
@@ -54,10 +55,9 @@ class ESPTimeSeries(GenericTimeSeries):
     used for short-time observations of solar irradiance.
     """
 
-    _source = 'esp'
-    _url = "http://lasp.colorado.edu/home/eve/"
+    _source = 'esp+'
 
-    def plot(self, axes=None, columns=None, **kwargs):
+    def plot(self, axes=None, **kwargs):
         """
         Plots the EVE ESP Level 1 timeseries data.
 
@@ -65,8 +65,6 @@ class ESPTimeSeries(GenericTimeSeries):
         ----------
         axes : numpy.ndarray of `matplotlib.axes.Axes`, optional
             The axes on which to plot the TimeSeries.
-        columns : list[str], optional
-            If provided, only plot the specified columns.
         **kwargs : `dict`
             Additional plot keyword arguments that are handed to `pandas.DataFrame.plot`.
 
@@ -75,22 +73,32 @@ class ESPTimeSeries(GenericTimeSeries):
         array of `~matplotlib.axes.Axes`
             The plot axes.
         """
-        axes, columns = self._setup_axes_columns(axes, columns, subplots=True)
-        column_names = {"QD": "Flux \n 0.1-7nm", "CH_18": "Flux \n 18nm",
-                        "CH_26": "Flux \n 26nm", "CH_30": "Flux \n 30nm", "CH_36": "Flux \n 36nm"}
-
-        for i, name in enumerate(self.to_dataframe()[columns]):
-            axes[i].plot(self._data[name],
-                         label=name)
-            plt.xticks(rotation=30)
-            axes[i].set_ylabel(column_names[name])
-            axes[i].legend(loc="upper right")
-        axes[-1].set_xlim(self._data.index[0], self._data.index[-1])
-        self._setup_x_axis(axes)
+        self._validate_data_for_plotting()
+        names = ("Flux \n 0.1-7nm", "Flux \n 18nm", "Flux \n 26nm", "Flux \n 30nm", "Flux \n 36nm")
+        colors = ('tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
+                  'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan')
+        predefined_axes = False
+        if isinstance(axes, np.ndarray):
+            predefined_axes = True
+        elif axes is None:
+            axes = self.to_dataframe().plot(subplots=True, sharex=True, **kwargs)
+        for i, ax in enumerate(axes):
+            if predefined_axes:
+                ax.plot(self._data[self._data.columns[i]],
+                        color=colors[i % len(colors)],
+                        label=self._data.columns[i])
+                plt.xticks(rotation=30)
+            ax.set_ylabel(names[i])
+            ax.legend(loc="upper right")
+        axes[-1].set_xlim(self.to_dataframe().index[0], self.to_dataframe().index[-1])
+        locator = mdates.AutoDateLocator()
+        formatter = mdates.ConciseDateFormatter(locator)
+        axes[-1].xaxis.set_major_locator(locator)
+        axes[-1].xaxis.set_major_formatter(formatter)
         return axes
 
     @peek_show
-    def peek(self, title="EVE/ESP Level 1", columns=None, **kwargs):
+    def peek(self, title="EVE/ESP Level 1", **kwargs):
         """
         Displays the EVE ESP Level 1 timeseries data by calling
         `~sunpy.timeseries.sources.eve.ESPTimeSeries.plot`.
@@ -99,12 +107,10 @@ class ESPTimeSeries(GenericTimeSeries):
         ----------
         title : `str`, optional
             The title of the plot. Defaults to "EVE/ESP Level 1".
-        columns : list[str], optional
-            If provided, only plot the specified columns.
         **kwargs : `dict`
             Additional plot keyword arguments that are handed to `pandas.DataFrame.plot`.
         """
-        axes = self.plot(columns=columns, **kwargs)
+        axes = self.plot(**kwargs)
         axes[0].set_title(title)
         fig = axes[0].get_figure()
         fig.tight_layout()
@@ -124,18 +130,20 @@ class ESPTimeSeries(GenericTimeSeries):
         header = MetaDict(OrderedDict(hdulist[0].header))
         # Adding telescope to MetaData
         header.update({'TELESCOP': hdulist[1].header['TELESCOP'].split()[0]})
+        
 
         start_time = parse_time(hdulist[1].header['T_OBS'])
         times = start_time + TimeDelta(hdulist[1].data['SOD']*u.second)
 
-        colnames = ['QD', 'CH_18', 'CH_26', 'CH_30', 'CH_36']
+        colnames = ['SOD', 'QD', 'Q_0', 'Q_1', 'Q_2', 'Q_3', 'CH_18', 'CH_26', 'CH_30', 'CH_36', 'CH_D', 'EFF_QD']
 
         all_data = [hdulist[1].data[x] for x in colnames]
         data = DataFrame(np.array(all_data).T, index=times.isot.astype(
             'datetime64'), columns=colnames)
         data.sort_index(inplace=True)
 
-        units = OrderedDict([('QD', u.W/u.m**2),
+        units = OrderedDict([('SOD', u.second),
+                             ('QD', u.W/u.m**2),
                              ('CH_18', u.W/u.m**2),
                              ('CH_26', u.W/u.m**2),
                              ('CH_30', u.W/u.m**2),
@@ -151,7 +159,61 @@ class ESPTimeSeries(GenericTimeSeries):
         if kwargs.get('source', ''):
             return kwargs.get('source', '').lower().startswith(cls._source)
         if 'meta' in kwargs.keys():
-            return kwargs['meta'].get('TELESCOP', '').endswith('SDO/EVE')
+            return kwargs['meta'].get('TELESCOP', '').endswith('SDO/EVE') and not kwargs['meta'].get('INSTRUME', '').endswith('EVE_MEGS')
+
+
+class MEGSPTimeSeries(GenericTimeSeries):
+    """
+    SDO EVE/Megs-P Level 1 data.
+
+    Notes
+    -----
+
+    """
+
+    _source = 'megs_p'
+
+    # no plot and peek methods for now
+
+    @classmethod
+    def _parse_file(cls, filepath):
+        """
+        Parses a EVE MEGS-P level 1 data.
+        """
+        hdus = sunpy.io.read_file(filepath)
+        return cls._parse_hdus(hdus)
+
+    @classmethod
+    def _parse_hdus(cls, hdulist):
+        header = MetaDict(OrderedDict(hdulist[0].header))
+        # Adding telescope to MetaData
+        header.update({'INSTRUME': hdulist[1].header['INSTRUME'].split()[0]})
+
+        start_time = parse_time(hdulist[1].header['T_OBS'])
+        times = start_time + TimeDelta(hdulist[1].data['SOD']*u.second)
+
+        # MEGS-P fields
+        colnames = ['YYYYDOY', 'SOD', 'LY_ALPHA', 'LY_ALPHA_DN', 'PREC', 'FILT_LY_ALPHA_DN', 'FILT_DARK_DN', 'FLAGS']
+
+        all_data = [hdulist[1].data[x] for x in colnames]
+        data = DataFrame(np.array(all_data).T, index=times.isot.astype(
+            'datetime64'), columns=colnames)
+        data.sort_index(inplace=True)
+
+        units = OrderedDict([('SOD', u.second)])
+
+        return data, header, units
+
+    @classmethod
+    def is_datasource_for(cls, **kwargs):
+        """
+        Determines if header corresponds to an EVE image.
+        """
+        if kwargs.get('source', ''):
+            return kwargs.get('source', '').lower().startswith(cls._source)
+        if 'meta' in kwargs.keys():
+            return kwargs['meta'].get('INSTRUME', '').endswith('EVE_MEGS') and kwargs['meta'].get('INSTRUME', '').endswith('MegsPData')
+
 
 
 class EVESpWxTimeSeries(GenericTimeSeries):
@@ -194,10 +256,9 @@ class EVESpWxTimeSeries(GenericTimeSeries):
     """
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'eve'
-    _url = "http://lasp.colorado.edu/home/eve/"
 
     @peek_show
-    def peek(self, columns=None, **kwargs):
+    def peek(self, column=None, **kwargs):
         """
         Plots the time series in a new figure.
 
@@ -210,8 +271,8 @@ class EVESpWxTimeSeries(GenericTimeSeries):
 
         Parameters
         ----------
-        columns : list[str], optional
-            If provided, only plot the specified columns.
+        column : `str`, optional
+            The column to display. Defaults to ``None``, so it will display all.
         **kwargs : `dict`
             Additional plot keyword arguments that are handed to
             :meth:`pandas.DataFrame.plot`.
@@ -220,7 +281,7 @@ class EVESpWxTimeSeries(GenericTimeSeries):
         self._validate_data_for_plotting()
 
         # Choose title if none was specified
-        if "title" not in kwargs and columns is None:
+        if "title" not in kwargs and column is None:
             if len(self.to_dataframe().columns) > 1:
                 kwargs['title'] = 'EVE (1 minute data)'
             else:
@@ -230,15 +291,13 @@ class EVESpWxTimeSeries(GenericTimeSeries):
                 else:
                     kwargs['title'] = 'EVE Averages'
 
-        if columns is None:
+        if column is None:
             axes = self.to_dataframe().plot(sharex=True, **kwargs)
         else:
-            data = self.to_dataframe()[columns]
-            if "title" not in kwargs and len(columns) == 1:
-                kwargs['title'] = 'EVE ' + columns[0].replace('_', ' ')
-            else:
-                kwargs['title'] = 'EVE Averages'
-            axes = data.plot(sharex=True, **kwargs)
+            data = self.to_dataframe()[column]
+            if "title" not in kwargs:
+                kwargs['title'] = 'EVE ' + column.replace('_', ' ')
+            axes = data.plot(**kwargs)
 
         if "subplots" in kwargs:
             fig = axes[0].get_figure()
