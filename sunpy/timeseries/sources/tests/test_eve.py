@@ -9,6 +9,7 @@ from sunpy.util.exceptions import SunpyDeprecationWarning, SunpyUserWarning
 
 esp_filepath = get_test_filepath('eve_l1_esp_2011046_00_truncated.fits')
 eve_filepath = get_test_filepath('EVE_L0CS_DIODES_1m_truncated.txt')
+eve_l3_url = 'https://lasp.colorado.edu/eve/data_access/eve_data/products/merged/latest_EVE_L3_merged_1nm.fit'
 
 
 def test_eve():
@@ -51,3 +52,23 @@ def test_esp_peek(esp_test_ts):
 @figure_test
 def test_eve_peek(eve_test_ts):
     eve_test_ts.peek()
+
+
+@pytest.mark.remote_data
+def test_eve_l3():
+    # Test EVE L3 TimeSeries
+    ts_eve_l3 = sunpy.timeseries.TimeSeries(eve_l3_url, source='L3_EVE')
+    assert isinstance(ts_eve_l3, sunpy.timeseries.sources.eve.EVEL3TimeSeries)
+
+
+@pytest.mark.remote_data
+def test_implicit_eve_l3():
+    # Test EVE L3 TimeSeries without explicit source 
+    ts_eve_l3 = sunpy.timeseries.TimeSeries(eve_l3_url)
+    assert isinstance(ts_eve_l3, sunpy.timeseries.sources.eve.EVEL3TimeSeries)
+
+
+@figure_test
+def test_eve_l3_peek(eve_l3_test_ts):
+    eve_l3_test_ts.peek()
+

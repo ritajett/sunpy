@@ -9,6 +9,7 @@ from pandas.io.parsers import read_csv
 
 import astropy.units as u
 from astropy.time import TimeDelta
+from astropy.time import Time
 
 import sunpy.io
 from sunpy.time import parse_time
@@ -18,7 +19,7 @@ from sunpy.util.exceptions import warn_deprecated
 from sunpy.util.metadata import MetaDict
 from sunpy.visualization import peek_show
 
-__all__ = ['EVESpWxTimeSeries', 'ESPTimeSeries']
+__all__ = ['EVESpWxTimeSeries', 'ESPTimeSeries', 'EVEL3TimeSeries']
 
 
 class ESPTimeSeries(GenericTimeSeries):
@@ -123,8 +124,9 @@ class ESPTimeSeries(GenericTimeSeries):
     @classmethod
     def _parse_hdus(cls, hdulist):
         header = MetaDict(OrderedDict(hdulist[0].header))
-        # Adding telescope to MetaData
+        # Adding telescope and instrument to MetaData
         header.update({'TELESCOP': hdulist[1].header['TELESCOP'].split()[0]})
+        header.update({'INSTRUME': hdulist[1].header['INSTRUME'].split()[0]})
 
         start_time = parse_time(hdulist[1].header['T_OBS'])
         times = start_time + TimeDelta(hdulist[1].data['SOD']*u.second)
@@ -152,7 +154,8 @@ class ESPTimeSeries(GenericTimeSeries):
         if kwargs.get('source', ''):
             return kwargs.get('source', '').lower().startswith(cls._source)
         if 'meta' in kwargs.keys():
-            return kwargs['meta'].get('TELESCOP', '').endswith('SDO/EVE')
+            return (kwargs['meta'].get('TELESCOP', '').endswith('SDO/EVE')) & \
+                (kwargs['meta'].get('INSTRUME', '').endswith('EVE_ESP') )
 
 
 class EVESpWxTimeSeries(GenericTimeSeries):
@@ -370,3 +373,142 @@ class EVESpWxTimeSeries(GenericTimeSeries):
         """
         if kwargs.get('source', ''):
             return kwargs.get('source', '').lower().startswith(cls._source)
+
+
+class EVEL3TimeSeries(GenericTimeSeries):
+    """    
+    SDO EVE Level 3 Merged data. 
+
+    The Extreme-ultraviolet Variability Experiment (EVE) on board SDO.
+    The Level 3 Merged data product is a mission-length daily averaged, merged spectrum 
+    with extracted lines, bands, photometer data. The full resolution data are at 0.02nm
+    resolution, but the data are also resampled and two additional merged files are available
+    at 1-nm resolution (with 0.5-nm bin centers) and 1-angstrom resolution (with 0.5-angstrom
+    bin centers).
+
+    This reader works for the spectrum. The lines, bands, and photometer data are ignored. 
+    
+    TODO finish docstring
+    """
+
+    _source = 'l3_eve'
+    _url = "http://lasp.colorado.edu/home/eve/"
+
+
+    def plot(self, axes=None, columns=None, **kwargs):
+        """
+        Plots the EVE Level 3 Spectrum timeseries data.
+
+        Parameters
+        ----------
+        axes : numpy.ndarray of `matplotlib.axes.Axes`, optional
+            The axes on which to plot the TimeSeries.
+        columns : list[str], optional
+            If provided, only plot the specified columns.
+        **kwargs : `dict`
+            Additional plot keyword arguments that are handed to `pandas.DataFrame.plot`.
+
+        Returns
+        -------
+        array of `~matplotlib.axes.Axes`
+            The plot axes.
+        """
+        axes, columns = self._setup_axes_columns(axes, columns, subplots=True)
+        column_names = {"QD": "Flux \n 0.1-7nm", "CH_18": "Flux \n 18nm",
+                        "CH_26": "Flux \n 26nm", "CH_30": "Flux \n 30nm", "CH_36": "Flux \n 36nm"}
+
+        for i, name in enumerate(self.to_dataframe()[columns]):
+            axes[i].plot(self._data[name],
+                         label=name)
+            axes[i].set_ylabel(column_names[name])
+            axes[i].legend(loc="upper right")
+        axes[-1].set_xlim(self._data.index[0], self._data.index[-1])
+        self._setup_x_axis(axes)
+        return axes
+
+    @peek_show
+    @deprecate_positional_args_since("4.1")
+    def peek(self, *, title="EVE/ESP Level 1", columns=None, **kwargs):
+        """
+        Displays the EVE ESP Level 1 timeseries data by calling
+        `~sunpy.timeseries.sources.eve.ESPTimeSeries.plot`.
+
+        Parameters
+        ----------
+        title : `str`, optional
+            The title of the plot. Defaults to "EVE/ESP Level 1".
+        columns : list[str], optional
+            If provided, only plot the specified columns.
+        **kwargs : `dict`
+            Additional plot keyword arguments that are handed to `pandas.DataFrame.plot`.
+        """
+        axes = self.plot(columns=columns, **kwargs)
+        axes[0].set_title(title)
+        fig = axes[0].get_figure()
+        fig.tight_layout()
+        fig.subplots_adjust(hspace=0.05)
+        return fig
+
+
+    @classmethod
+    def _parse_file(cls, filepath):
+        """
+        Parses EVE Level 3 data file.
+        """
+        hdus = sunpy.io.read_file(filepath)
+        return cls._parse_hdus(hdus)
+
+
+    @classmethod
+    def _parse_hdus(cls, hdulist):
+        """
+        Parses the header data units from an EVE Level 3 merged data file.
+        """
+        # EVE level 3 merged data   
+        # the names of the HDUs (the first HDU is a dummy header 
+        # added by the FITS writer and can be discarded)
+        hdu_names = [x.header['extname'] if 'extname' in x.header.keys() else '' for x in hdulist]
+
+        # the merged file has
+        
+        # the main header info is in the MergedData header
+        # as is the spectral irradiance & YYYYDOY date
+        md_idx = hdu_names.index('MergedData')                          # get the index of the MergedData HDU
+        header = MetaDict(OrderedDict(hdulist[md_idx].header))
+        irradiance = hdulist[md_idx].data['SP_IRRADIANCE']              # 2D array of yyyydoy x wavelength bins
+        yds = hdulist[md_idx].data['YYYYDOY']
+           
+        # wavelength is in the SpectrumMeta HDU
+        sm_idx = hdu_names.index('SpectrumMeta')                        # index of the SpectrumMeta HDU
+        wavelengths = hdulist[sm_idx].data['WAVELENGTH'].reshape(-1)    # 1D array of the wavelength bins
+        colnames = [f'{i}nm' for i in wavelengths]
+
+        # build Time object from year-doy for dataframe index
+        years = yds // 1000                                             # extract year & doy to build Time object
+        doys = yds - (years * 1000)
+        times_df = DataFrame({'yyyy': years, 'doy': doys})
+        times = times_df.apply(lambda x: Time(f"{x.yyyy:>04d}:{x.doy:>03d}", format='yday'), axis=1)
+        times = times.apply(lambda x: x.isot)                           # use isot format
+        
+        # dataframe has 1 columns for each wavelength bin
+        data = DataFrame(irradiance, index=times.astype('datetime64'), columns=colnames)
+
+        # irradiance units is W/m^2/nm
+        units = OrderedDict([(i, u.W/u.m**2/u.nm) for i in colnames])
+
+        return data, header, units
+                      
+
+    @classmethod
+    def is_datasource_for(cls, **kwargs):
+        """
+        Determines if header corresponds to an EVE image.
+        """
+        if kwargs.get('source', ''):
+            return kwargs.get('source', '').lower().startswith(cls._source)
+        if 'meta' in kwargs.keys():
+            # Level 2/2B data products also have 'EVE_MEGS' in the 'INSTRUME' field
+            # so need to check the filename to make sure this is a L3 merged file
+            return (kwargs['meta'].get('TELESCOP', '').endswith('SDO/EVE')) & \
+                   (kwargs['meta'].get('INSTRUME', '').endswith('EVE_MEGS')) & \
+                   (kwargs['meta'].get('FILENAME', '').startswith('EVE_L3'))
